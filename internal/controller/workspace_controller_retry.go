@@ -59,6 +59,11 @@ func (r *WorkspaceReconciler) retryFailedDestroyRun(ctx context.Context, w *work
 	w.instance.Status.DestroyRunID = retriedRun.ID
 	w.updateWorkspaceStatusRun(retriedRun)
 
+	if err := r.Status().Update(ctx, &w.instance); err != nil {
+		w.log.Error(err, "Retry Runs", "msg", "failed to update destroy run status")
+		return err
+	}
+
 	return nil
 }
 
@@ -70,7 +75,12 @@ func (r *WorkspaceReconciler) retryFailedRun(ctx context.Context, w *workspaceIn
 	}
 	w.instance.Status.Retry.Failed++
 
-	if w.instance.Spec.RetryPolicy.BackoffLimit < 0 || w.instance.Status.Retry.Failed <= w.instance.Spec.RetryPolicy.BackoffLimit {
+	if err := r.Status().Update(ctx, &w.instance); err != nil {
+		w.log.Error(err, "Retry Runs", "msg", "failed to update retry status")
+		return nil, err
+	}
+
+	if w.instance.Spec.RetryPolicy.BackoffLimit < 0 || w.instance.Status.Retry.Failed < w.instance.Spec.RetryPolicy.BackoffLimit {
 
 		options := tfc.RunCreateOptions{
 			Message:     tfc.String(runMessage),
