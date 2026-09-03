@@ -1,0 +1,5 @@
+kind: BUG FIXES
+body: '`Workspace`: Fix an issue where the controller created a new destroy run on every reconcile when the status update after creating the destroy run failed, instead of reusing the destroy run already queued on the workspace.'
+time: 2026-09-03T15:32:43.000000000Z
+custom:
+    PR: "6"
