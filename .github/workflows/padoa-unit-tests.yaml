@@ -1,0 +1,51 @@
+name: Padoa unit tests
+
+# Runs the Go tests that need nothing but a checkout, on every pull request.
+#
+# Upstream's `Unit tests` workflow does not serve this fork:
+#   - it only triggers on pull requests targeting `main`, and every branch here
+#     targets `release/fork-*`, so it would skip the whole stack even if enabled;
+#   - it is currently `disabled_inactivity` — GitHub switches a workflow off after
+#     60 days of repo inactivity when it carries a `schedule:` trigger, which
+#     upstream's does. This one deliberately has no cron, so it cannot be
+#     switched off the same way;
+#   - `make test-internal` covers only ./internal/pointer and ./internal/slice,
+#     never ./internal/controller — which is where this fork's destroy-run change
+#     and its five unit tests live.
+#
+# ./internal/controller also holds the envtest suite, which needs KUBEBUILDER_ASSETS
+# and live TFC credentials. `-skip` excludes that one entry point by name rather
+# than listing the tests to keep, so a unit test added to the package later is
+# picked up here without touching this file.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "release/fork-**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./api/... ./internal/...
+
+      - name: Test
+        run: |
+          set -euo pipefail
+          go test -count 1 ./api/v1alpha2 ./internal/pointer ./internal/slice
+          go test -count 1 -skip '^TestControllersAPIs$' ./internal/controller
