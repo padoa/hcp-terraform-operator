@@ -8,6 +8,9 @@ on:
       - 'charts/hcp-terraform-operator/**'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   helm-docs:
     runs-on: ubuntu-latest
