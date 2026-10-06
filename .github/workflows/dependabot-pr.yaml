@@ -9,6 +9,9 @@ on:
       - 'go.mod'
       - 'go.sum'
 
+permissions:
+  contents: read
+
 jobs:
   hcp-terraform:
     if: github.actor == 'dependabot[bot]'
