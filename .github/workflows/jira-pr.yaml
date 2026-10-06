@@ -6,6 +6,8 @@ on:
     types: [opened, closed, reopened, edited]
   workflow_dispatch:
 
+permissions: {}
+
 name: Jira Community PR Sync
 
 jobs:
