@@ -57,23 +57,38 @@ func (r *WorkspaceReconciler) deleteWorkspace(ctx context.Context, w *workspaceI
 				w.log.Info("Reconcile Workspace", "msg", fmt.Sprintf("workspace ID %s has been deleted, remove finalizer", w.instance.Status.WorkspaceID))
 				return r.removeFinalizer(ctx, w)
 			}
-			w.log.Info("Destroy Run", "msg", "destroy on deletion, create a new destroy run")
-			run, err := w.tfClient.Client.Runs.Create(ctx, tfc.RunCreateOptions{
-				IsDestroy: tfc.Bool(true),
-				Message:   tfc.String(runMessage),
-				Workspace: &tfc.Workspace{
-					ID: w.instance.Status.WorkspaceID,
-				},
-			})
+			// A previous reconcile may have queued the destroy run but failed to record its ID.
+			current, err := findAdoptableDestroyRun(ctx, w)
 			if err != nil {
-				w.log.Error(err, "Destroy Run", "msg", "failed to create a new destroy run")
+				w.log.Error(err, "Destroy Run", "msg", "failed to list workspace runs")
 				return err
 			}
-			w.log.Info("Destroy Run", "msg", fmt.Sprintf("successfully created a new destroy run: %s", run.ID))
+			if current != nil {
+				w.log.Info("Destroy Run", "msg", fmt.Sprintf("adopting existing destroy run %s (%s)", current.ID, current.Status))
+				w.instance.Status.DestroyRunID = current.ID
+				w.updateWorkspaceStatusRun(current)
+				if err := r.Status().Update(ctx, &w.instance); err != nil {
+					return err
+				}
+			} else {
+				w.log.Info("Destroy Run", "msg", "destroy on deletion, create a new destroy run")
+				run, err := w.tfClient.Client.Runs.Create(ctx, tfc.RunCreateOptions{
+					IsDestroy: tfc.Bool(true),
+					Message:   tfc.String(runMessage),
+					Workspace: &tfc.Workspace{
+						ID: w.instance.Status.WorkspaceID,
+					},
+				})
+				if err != nil {
+					w.log.Error(err, "Destroy Run", "msg", "failed to create a new destroy run")
+					return err
+				}
+				w.log.Info("Destroy Run", "msg", fmt.Sprintf("successfully created a new destroy run: %s", run.ID))
 
-			w.instance.Status.DestroyRunID = run.ID
-			w.updateWorkspaceStatusRun(run)
-			return r.Status().Update(ctx, &w.instance)
+				w.instance.Status.DestroyRunID = run.ID
+				w.updateWorkspaceStatusRun(run)
+				return r.Status().Update(ctx, &w.instance)
+			}
 		}
 
 		w.log.Info("Destroy Run", "msg", fmt.Sprintf("get destroy run %s", w.instance.Status.DestroyRunID))
@@ -107,22 +122,17 @@ func (r *WorkspaceReconciler) deleteWorkspace(ctx context.Context, w *workspaceI
 				return r.handleWorkspaceErrorNotFound(ctx, w, err)
 			}
 
-			w.log.Info("Destroy Run", "msg", fmt.Sprintf("CurrentRun: %s %s %v", workspace.CurrentRun.ID, workspace.CurrentRun.Status, workspace.CurrentRun.IsDestroy))
+			current, err := findAdoptableDestroyRun(ctx, w)
+			if err != nil {
+				w.log.Error(err, "Destroy Run", "msg", "failed to list workspace runs")
+				return err
+			}
+			if current != nil && current.ID != w.instance.Status.DestroyRunID {
+				w.log.Info("Destroy Run", "msg", fmt.Sprintf("found more recent destroy run %s (%s), updating DestroyRunID", current.ID, current.Status))
 
-			if workspace.CurrentRun != nil && workspace.CurrentRun.ID != w.instance.Status.DestroyRunID {
-
-				run, err := w.tfClient.Client.Runs.Read(ctx, w.instance.Status.DestroyRunID)
-				if err != nil {
-					// ignore this run id, and let the next reconcile loop handle the error
-					return nil
-				}
-				if run.IsDestroy {
-					w.log.Info("Destroy Run", "msg", fmt.Sprintf("found more recent destroy run %s, updating DestroyRunID", workspace.CurrentRun.ID))
-
-					w.instance.Status.DestroyRunID = workspace.CurrentRun.ID
-					w.updateWorkspaceStatusRun(run)
-					return r.Status().Update(ctx, &w.instance)
-				}
+				w.instance.Status.DestroyRunID = current.ID
+				w.updateWorkspaceStatusRun(current)
+				return r.Status().Update(ctx, &w.instance)
 			}
 			if isRetryEnabled(w) {
 				w.log.Info("Destroy Run", "msg", fmt.Sprintf("ongoing destroy run %s is unsuccessful, retrying it", run.ID))
@@ -167,6 +177,39 @@ func (r *WorkspaceReconciler) handleWorkspaceErrorNotFound(ctx context.Context, 
 	w.log.Error(err, "Reconcile Workspace", "msg", fmt.Sprintf("failed to handle Workspace ID %s, retry later", w.instance.Status.WorkspaceID))
 	r.Recorder.Eventf(&w.instance, corev1.EventTypeWarning, "ReconcileWorkspace", "Failed to handle Workspace ID %s, retry later", w.instance.Status.WorkspaceID)
 	return err
+}
+
+// findAdoptableDestroyRun returns the most recent destroy run on the workspace that the
+// controller can track, or nil when there is none.
+//
+// This reads the run list rather than workspace.CurrentRun because HCP Terraform keeps
+// current-run pointed at whichever run holds the workspace queue. A destroy run queued
+// behind a pending apply is therefore never the current run, and relying on current-run
+// alone would queue a second destroy run on every reconcile that lost its status write.
+// Only the first page is examined: a non-terminal destroy run older than that is not
+// reachable in practice, and falling through queues a new run as before.
+func findAdoptableDestroyRun(ctx context.Context, w *workspaceInstance) (*tfc.Run, error) {
+	runs, err := w.tfClient.Client.Runs.List(ctx, w.instance.Status.WorkspaceID, &tfc.RunListOptions{
+		ListOptions: tfc.ListOptions{PageNumber: 1, PageSize: maxPageSize},
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, run := range runs.Items {
+		if isAdoptableDestroyRun(run) {
+			return run, nil
+		}
+	}
+	return nil, nil
+}
+
+// isAdoptableDestroyRun reports whether run is a destroy run the controller can track instead of queueing a new one.
+func isAdoptableDestroyRun(run *tfc.Run) bool {
+	if run == nil || !run.IsDestroy {
+		return false
+	}
+	_, unsuccessful := runStatusUnsuccessful[run.Status]
+	return !unsuccessful
 }
 
 func (w *workspaceInstance) updateWorkspaceStatusRun(run *tfc.Run) {

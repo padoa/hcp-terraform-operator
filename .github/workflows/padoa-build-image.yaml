@@ -1,0 +1,116 @@
+name: Build and push padoa image
+
+# Builds padoa.azurecr.io/padoa-tools/tfc-operator from this repository.
+#
+# Before this workflow existed the image was built by hand: 2.9.0-padoa-0 carries an
+# empty `version` label, no `revision` label, and a local timezone offset in its
+# creation timestamp, so there is no way to tell which commit it was built from. Every
+# image this workflow publishes is tagged with, and labelled with, its commit.
+#
+# Trigger it either by dispatching it on a branch, or by pushing a tag matching
+# *-padoa-*. Tag pushes use the workflow file from the tagged commit, so a tag is the
+# way to build a commit that is not on the default branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      extra_tag:
+        description: "Additional image tag to publish alongside the commit-pinned one (optional)"
+        required: false
+        type: string
+  push:
+    tags:
+      - "*-padoa-*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Compute image metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < version/VERSION)"
+          revision="$(git rev-parse HEAD)"
+          short="$(git rev-parse --short HEAD)"
+          image="${{ secrets.ACR_HOST }}/padoa-tools/tfc-operator"
+
+          # Commit-pinned and immutable: a tag never moves to different code.
+          tags="${image}:${version}-padoa-${short}"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tags="${tags},${image}:${{ github.ref_name }}"
+          fi
+          if [ -n "${{ inputs.extra_tag }}" ]; then
+            tags="${tags},${image}:${{ inputs.extra_tag }}"
+          fi
+
+          {
+            echo "version=${version}"
+            echo "revision=${revision}"
+            echo "tags=${tags}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The release-default image stage packages a binary from dist/ rather than
+      # compiling in the container, which is how it can carry version and revision
+      # labels. BIN_NAME must stay `manager`: the Helm chart hardcodes
+      # `command: [/manager]`.
+      - name: Build manager binary
+        run: |
+          set -euo pipefail
+          mkdir -p dist/linux/amd64
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -a -trimpath -o dist/linux/amd64/manager cmd/main.go
+
+      - name: Login to ACR
+        uses: azure/docker-login@15c4aadf093404726ab2ff205b2cdd33fa6d054c # v2
+        with:
+          login-server: ${{ secrets.ACR_HOST }}
+          username: ${{ secrets.ACR_PUSH_USER }}
+          password: ${{ secrets.ACR_PUSH_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          platforms: linux/amd64
+
+      - name: Build and push
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        with:
+          context: .
+          file: Dockerfile
+          target: release-default
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BIN_NAME=manager
+            PRODUCT_VERSION=${{ steps.meta.outputs.version }}
+            PRODUCT_REVISION=${{ steps.meta.outputs.revision }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.meta.outputs.revision }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Image published"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| tags | \`${{ steps.meta.outputs.tags }}\` |"
+            echo "| commit | \`${{ steps.meta.outputs.revision }}\` |"
+            echo "| version | \`${{ steps.meta.outputs.version }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
