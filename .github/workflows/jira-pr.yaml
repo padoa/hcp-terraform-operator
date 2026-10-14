@@ -12,7 +12,7 @@ name: Jira Community PR Sync
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: Jira sync
     steps:    
       - name: Login
