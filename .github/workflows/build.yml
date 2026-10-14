@@ -18,7 +18,7 @@ env:
 
 jobs:
   set-product-version:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       product-version: ${{ steps.set-product-version.outputs.product-version }}
     steps:
@@ -30,7 +30,7 @@ jobs:
 
   generate-metadata-file:
     needs: set-product-version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     env:
       METADATA_FILE_NAME: 'metadata.json'
     outputs:
@@ -54,7 +54,7 @@ jobs:
   build:
     name: Go Linux ${{ matrix.arch }} build
     needs: [set-product-version]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       go-version: ${{ steps.set-up-go.outputs.go-version }}
     strategy:
@@ -87,7 +87,7 @@ jobs:
   build-docker:
     name: Docker ${{ matrix.arch }} build
     needs: [build, set-product-version]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         arch: ["amd64", "arm64"]
@@ -114,7 +114,7 @@ jobs:
   build-docker-ubi:
     name: Docker build UBI
     needs: [build, set-product-version]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Checkout repository
