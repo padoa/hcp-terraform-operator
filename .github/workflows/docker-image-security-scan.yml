@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   scan-docker-image:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Docker image metadata
         id: meta

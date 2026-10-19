@@ -14,7 +14,7 @@ name: Jira Community Issue Sync
 
 jobs:
   sync:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     name: Jira Community Issue sync
     steps:    
       - name: Login
